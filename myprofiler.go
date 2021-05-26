@@ -8,11 +8,14 @@ import (
 	"log"
 	"os"
 	"os/user"
+	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/lib/pq"
 )
 
 type Config struct {
@@ -45,6 +48,11 @@ var normalizePatterns = []NormalizePattern{
 
 func processList(db *sql.DB) []string {
 	procList := "SHOW FULL PROCESSLIST"
+	switch db.Driver().(type) {
+	case *pq.Driver:
+		procList = "SELECT datid, usename, client_hostname, datname, 'QUERY', CAST(EXTRACT(EPOCH FROM now() - query_start) AS integer), state, query FROM pg_stat_activity where datid is not NULL and query != 'SELECT * FROM pg_stat_activity'"
+	}
+	fmt.Println(reflect.TypeOf(db.Driver()))
 	rows, err := db.Query(procList)
 
 	queries := []string{}
@@ -124,7 +132,7 @@ func showSummary(w io.Writer, sum map[string]int64, n int) {
 		if i >= n {
 			break
 		}
-		fmt.Fprintf(w, "%4d %s\n", p.c, p.q)
+		fmt.Fprintf(w, "%4d %s\n", p.c, strings.Replace(p.q, "\n", " ", -1))
 	}
 }
 
@@ -212,7 +220,7 @@ func profile(db *sql.DB, cfg *Config) {
 }
 
 func main() {
-	var host, dbuser, password, dumpfile string
+	var dbtype, host, dbuser, password, dumpfile string
 	var port int
 
 	currentUser, err := user.Current()
@@ -222,6 +230,7 @@ func main() {
 		dbuser = currentUser.Name
 	}
 	cfg := Config{}
+	flag.StringVar(&dbtype, "dbtype", "mysql", "Type of database")
 	flag.StringVar(&host, "host", "localhost", "Host of database")
 	flag.StringVar(&dbuser, "user", dbuser, "User")
 	flag.StringVar(&password, "password", "", "Password")
@@ -237,7 +246,10 @@ func main() {
 	flag.Parse()
 
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", dbuser, password, host, port)
-	db, err := sql.Open("mysql", dsn)
+	if dbtype == "postgres" {
+		dsn = fmt.Sprintf("host=%s port=%d user='%s' password=%s sslmode=disable", host, port, dbuser, password)
+	}
+	db, err := sql.Open(dbtype, dsn)
 	if err != nil {
 		fmt.Println("dsn: ", dsn)
 		log.Fatal(err)
